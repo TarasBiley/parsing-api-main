@@ -1,0 +1,111 @@
+services:
+  parse_service:
+    build: ./src
+    container_name: parse_service
+    expose:
+      - "8000"
+    env_file:
+      - .env
+    depends_on:
+      - parse_redis
+    command: /bin/bash -c 'gunicorn main:app --workers 5 --threads=1 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000'
+    restart: always
+
+  parse_nginx:
+    image: nginx:latest
+    container_name: parse_nginx
+    volumes:
+      - $CI_PROJECT_DIR/src/nginx.conf:/etc/nginx/nginx.conf
+      - $CI_PROJECT_DIR/src/nginx_config:/etc/nginx/conf.d
+    depends_on:
+      - parse_service
+    ports:
+      - "5555:5555"
+      - "8000:8000"
+      - "9100:9100"
+      - "9113:9113"
+      - "9121:9121"
+      - "9808:9808"
+    restart: always
+
+  parse_redis:
+    image: redis:latest
+    container_name: parse_redis
+    expose:
+      - "6379"
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - $CI_PROJECT_DIR/redis.conf:/usr/local/etc/redis/redis.conf
+    restart: always
+
+  parse_worker:
+    build: ./src
+    container_name: parse_worker
+    command: /bin/bash -c 'celery --app=celery_config.celery_app worker --loglevel=INFO'
+    env_file:
+      - .env
+    depends_on:
+      - parse_redis
+    restart: always
+
+  flower:
+    image: mher/flower:2.0
+    environment:
+      - CELERY_BROKER_URL=redis://parse_redis:6379
+      - FLOWER_PORT=5555
+    expose:
+      - "5555"
+    depends_on:
+      - parse_redis
+    restart: always
+
+  node-exporter:
+    image: prom/node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    container_name: node-exporter
+    hostname: node-exporter
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.filesystem.ignored-mount-points
+      - ^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)
+    expose:
+      - "9100"
+    restart: always
+    environment:
+      TZ: "Europe/Moscow"
+
+  celery-exporter:
+    image: danihodovic/celery-exporter
+    container_name: celery-exporter
+    command:
+      - --broker-url=redis://parse_redis:6379//
+    expose:
+      - "9808"
+    depends_on:
+      - parse_worker
+    restart: always
+
+  redis-exporter:
+    image: oliver006/redis_exporter
+    container_name: redis-exporter
+    command:
+      - '--redis.addr=redis://parse_redis:6379'
+    expose:
+      - "9121"
+    depends_on:
+      - parse_redis
+    restart: always
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.1.0
+    container_name: nginx-exporter
+    command:
+      - --nginx.scrape-uri=http://146.70.131.3:8080/stub_status
+      - --web.telemetry-path=/metrics
+    expose:
+      - "9113"
+    restart: always
